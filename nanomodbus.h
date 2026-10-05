@@ -141,11 +141,15 @@ typedef enum nmbs_transport {
  *
  * Both methods should block until either:
  * - `count` bytes of data are read/written
- * - the byte timeout, with `byte_timeout_ms >= 0`, expires
- *
- * A value `< 0` for `byte_timeout_ms` means infinite timeout.
- * With a value `== 0` for `byte_timeout_ms`, the method should read/write once in a non-blocking fashion and return immediately.
- *
+ * - one of the enabled timeouts expires
+ * 
+ * A value `< 0` for `transfer_timeout_ms` means the read/write method shall wait indefinitely until all bytes are transferred.
+ * With a value `== 0`, all bytes must be transferred immediately within a single cycle.
+ * A value `> 0` limits the total transfer time to the specified value. 
+ * 
+ * A value `< 0` for `progress_timeout_ms` disables transfer progress checking.
+ * With a value `== 0`, every cycle must make transfer progress.
+ * A value `> 0` limits the time without transfer progress to the specified value.
  *
  * Their return value should be the number of bytes actually read/written, or `< 0` in case of error.
  * A return value between `0` and `count - 1` will be treated as if a timeout occurred on the transport side. All other
@@ -160,10 +164,10 @@ typedef enum nmbs_transport {
  */
 typedef struct nmbs_platform_conf {
     nmbs_transport transport; /*!< Transport type */
-    int32_t (*read)(uint8_t* buf, uint16_t count, int32_t byte_timeout_ms,
-                    void* arg); /*!< Bytes read transport function pointer */
-    int32_t (*write)(const uint8_t* buf, uint16_t count, int32_t byte_timeout_ms,
-                     void* arg); /*!< Bytes write transport function pointer */
+    int32_t (*read)(uint8_t* buf, uint16_t count, int32_t transfer_timeout_ms,
+                    int32_t progress_timeout_ms, void* arg); /*!< Bytes read transport function pointer */
+    int32_t (*write)(const uint8_t* buf, uint16_t count, int32_t transfer_timeout_ms,
+                    int32_t progress_timeout_ms, void* arg); /*!< Bytes write transport function pointer */
     uint16_t (*crc_calc)(const uint8_t* data, uint32_t length,
                          void* arg);        /*!< CRC calculation function pointer. Optional */
     void (*flush)(nmbs_t* nmbs, void* arg); /*!< Custom serial/TCP connection flush function pointer. Optional */
@@ -260,8 +264,9 @@ struct nmbs_t {
 
     nmbs_callbacks callbacks;
 
-    int32_t byte_timeout_ms;
-    int32_t read_timeout_ms;
+    int32_t capture_timeout_ms;
+    int32_t transfer_timeout_ms;
+    int32_t progress_timeout_ms;
 
     nmbs_platform_conf platform;
 
@@ -275,25 +280,23 @@ struct nmbs_t {
  */
 static const uint8_t NMBS_BROADCAST_ADDRESS = 0;
 
-/** Set the request/response timeout.
- * If the target instance is a server, sets the timeout of the nmbs_server_poll() function.
- * If the target instance is a client, sets the response timeout after sending a request. In case of timeout,
- * the called method will return NMBS_ERROR_TIMEOUT.
+/** Set the timeout for receiving the next request/response.
  * @param nmbs pointer to the nmbs_t instance
- * @param timeout_ms timeout in milliseconds. If < 0, the timeout is disabled.
+ * @param timeout_ms timeout in milliseconds. Defaults to -1 (waits indefinitely).
  */
-void nmbs_set_read_timeout(nmbs_t* nmbs, int32_t timeout_ms);
+void nmbs_set_capture_timeout(nmbs_t* nmbs, int32_t timeout_ms);
 
-/** Set the timeout between the reception/transmission of two consecutive bytes.
+/** Set the maximum time allowed for a read/write transfer.
  * @param nmbs pointer to the nmbs_t instance
- * @param timeout_ms timeout in milliseconds. If < 0, the timeout is disabled.
+ * @param timeout_ms timeout in milliseconds. Defaults to -1 (waits indefinitely).
  */
-void nmbs_set_byte_timeout(nmbs_t* nmbs, int32_t timeout_ms);
+void nmbs_set_transfer_timeout(nmbs_t* nmbs, int32_t timeout_ms);
 
-/** Create a new nmbs_platform_conf struct.
- * @param platform_conf pointer to the nmbs_platform_conf instance
+/** Set the maximum time allowed without progress during a read/write transfer.
+ * @param nmbs pointer to the nmbs_t instance
+ * @param timeout_ms timeout in milliseconds. Defaults to -1 (disabled).
  */
-void nmbs_platform_conf_create(nmbs_platform_conf* platform_conf);
+void nmbs_set_progress_timeout(nmbs_t* nmbs, int32_t timeout_ms);
 
 /** Set the pointer to user data argument passed to platform functions.
  * @param nmbs pointer to the nmbs_t instance
@@ -320,7 +323,7 @@ nmbs_error nmbs_server_create(nmbs_t* nmbs, uint8_t address_rtu, const nmbs_plat
 
 /** Handle incoming requests to the server.
  * This function should be called in a loop in order to serve any incoming request. Its maximum duration, in case of no
- * received request, is the value set with nmbs_set_read_timeout() (unless set to < 0).
+ * received request, is the value set with nmbs_set_capture_timeout() (unless set to < 0).
  * @param nmbs pointer to the nmbs_t instance
  *
  * @return NMBS_ERROR_NONE if successful, other errors otherwise.
