@@ -150,7 +150,7 @@ static nmbs_error recv(nmbs_t* nmbs, uint16_t count) {
     }
 
     const int32_t ret =
-            nmbs->platform.read(nmbs->msg.buf + nmbs->msg.buf_idx, count, nmbs->byte_timeout_ms, nmbs->platform.arg);
+            nmbs->platform.read(nmbs->msg.buf + nmbs->msg.buf_idx, count, nmbs->transfer_timeout_ms, nmbs->progress_timeout_ms, nmbs->platform.arg);
 
     if (ret == count)
         return NMBS_ERROR_NONE;
@@ -167,7 +167,7 @@ static nmbs_error recv(nmbs_t* nmbs, uint16_t count) {
 
 
 static nmbs_error send(const nmbs_t* nmbs, uint16_t count) {
-    const int32_t ret = nmbs->platform.write(nmbs->msg.buf, count, nmbs->byte_timeout_ms, nmbs->platform.arg);
+    const int32_t ret = nmbs->platform.write(nmbs->msg.buf, count, nmbs->transfer_timeout_ms, nmbs->progress_timeout_ms, nmbs->platform.arg);
 
     if (ret == count)
         return NMBS_ERROR_NONE;
@@ -185,7 +185,7 @@ static nmbs_error send(const nmbs_t* nmbs, uint16_t count) {
 
 static void flush(nmbs_t* nmbs, void* arg) {
     NMBS_UNUSED_PARAM(arg);
-    nmbs->platform.read(nmbs->msg.buf, sizeof(nmbs->msg.buf), 0, nmbs->platform.arg);
+    nmbs->platform.read(nmbs->msg.buf, sizeof(nmbs->msg.buf), 0, -1, nmbs->platform.arg);
 }
 
 
@@ -231,8 +231,9 @@ nmbs_error nmbs_create(nmbs_t* nmbs, const nmbs_platform_conf* platform_conf) {
 
     memset(nmbs, 0, sizeof(nmbs_t));
 
-    nmbs->byte_timeout_ms = -1;
-    nmbs->read_timeout_ms = -1;
+    nmbs->capture_timeout_ms = -1;
+    nmbs->transfer_timeout_ms = -1;
+    nmbs->progress_timeout_ms = -1;
 
     if (!platform_conf || platform_conf->initialized != 0xFFFFDEBE)
         return NMBS_ERROR_INVALID_ARGUMENT;
@@ -249,13 +250,18 @@ nmbs_error nmbs_create(nmbs_t* nmbs, const nmbs_platform_conf* platform_conf) {
 }
 
 
-void nmbs_set_read_timeout(nmbs_t* nmbs, int32_t timeout_ms) {
-    nmbs->read_timeout_ms = timeout_ms;
+void nmbs_set_transfer_timeout(nmbs_t* nmbs, int32_t timeout_ms) {
+    nmbs->transfer_timeout_ms = timeout_ms;
 }
 
 
-void nmbs_set_byte_timeout(nmbs_t* nmbs, int32_t timeout_ms) {
-    nmbs->byte_timeout_ms = timeout_ms;
+void nmbs_set_capture_timeout(nmbs_t* nmbs, int32_t timeout_ms) {
+    nmbs->capture_timeout_ms = timeout_ms;
+}
+
+
+void nmbs_set_progress_timeout(nmbs_t* nmbs, int32_t timeout_ms) {
+    nmbs->progress_timeout_ms = timeout_ms;
 }
 
 
@@ -316,9 +322,13 @@ static nmbs_error recv_msg_footer(nmbs_t* nmbs) {
 
 
 static nmbs_error recv_msg_header(nmbs_t* nmbs, bool* first_byte_received) {
-    // We wait for the read timeout here, just for the first message byte
-    int32_t old_byte_timeout = nmbs->byte_timeout_ms;
-    nmbs->byte_timeout_ms = nmbs->read_timeout_ms;
+    // We wait for the capture timeout here, just for the first message byte
+    // In this case, progress checking will be disabled.
+    int32_t old_transfer_timeout = nmbs->transfer_timeout_ms;
+    nmbs->transfer_timeout_ms = nmbs->capture_timeout_ms;
+
+    int32_t old_progress_timeout = nmbs->progress_timeout_ms;
+    nmbs->progress_timeout_ms = -1;
 
     msg_state_reset(nmbs);
 
@@ -327,7 +337,8 @@ static nmbs_error recv_msg_header(nmbs_t* nmbs, bool* first_byte_received) {
     if (nmbs->platform.transport == NMBS_TRANSPORT_RTU) {
         nmbs_error err = recv(nmbs, 1);
 
-        nmbs->byte_timeout_ms = old_byte_timeout;
+        nmbs->transfer_timeout_ms = old_transfer_timeout;
+        nmbs->progress_timeout_ms = old_progress_timeout;
 
         if (err != NMBS_ERROR_NONE)
             return err;
@@ -345,7 +356,8 @@ static nmbs_error recv_msg_header(nmbs_t* nmbs, bool* first_byte_received) {
     else if (nmbs->platform.transport == NMBS_TRANSPORT_TCP) {
         nmbs_error err = recv(nmbs, 1);
 
-        nmbs->byte_timeout_ms = old_byte_timeout;
+        nmbs->transfer_timeout_ms = old_transfer_timeout;
+        nmbs->progress_timeout_ms = old_progress_timeout;
 
         if (err != NMBS_ERROR_NONE)
             return err;
